@@ -18,7 +18,9 @@ import pickle
 import argparse
 import time
 from cgpdm_lib.models import GPDM
-
+from Caulimate.Utils.Tools import seed_everything
+from Caulimate.Data.SimSSM import GPCDM
+seed_everything(1)
 
 # file parameters
 p = argparse.ArgumentParser('train gpdm')
@@ -28,7 +30,7 @@ p.add_argument('-seed',
                help = 'seed')
 p.add_argument('-num_data',
                type = int,
-               default = 5,
+               default = 1,
                help = 'num_data')
 p.add_argument('-deg',
                type = int,
@@ -66,16 +68,21 @@ print(' - show results: '+str(flg_show))
 
 # define torch device and data type
 dtype=torch.float64
-device=torch.device('cpu')
+if torch.cuda.is_available():
+    device=torch.device('cuda')
+else:
+    device=torch.device('cpu')
 
 # load observation data
 folder = 'DATA/8x8_rng_swing_'+str(deg)+'_deg/'
 print('\nDATA FOLDER: '+folder)
 
+dataset = GPCDM(6000, 10, 6, 3, "ER", 10, ((-0.15, -0.05),(0.05, 0.15)))
 Y_data = []
-for i in range(41):
-    Y_data.append(np.random.laplace(size=(102, 192)))
-    #Y_data.append(np.loadtxt(folder+'state_samples_rng_swing_'+str(i)+'.csv', delimiter=','))
+Y_data.append(dataset.Z)
+# for i in range(41):
+#     Y_data.append(np.random.random(size=(102, 192)))
+#     #Y_data.append(np.loadtxt(folder+'state_samples_rng_swing_'+str(i)+'.csv', delimiter=','))
 
 # init GPDM object
 D = Y_data[0].shape[1]
@@ -104,6 +111,7 @@ model = GPDM(**param_dict)
 
 # add training data
 np.random.seed(seed)
+
 training_set = np.random.randint(low=0, high=len(Y_data), size=num_data)
 print('training set: ', training_set)
 for i in training_set:
@@ -190,3 +198,4 @@ if flg_show:
         animator = ani.FuncAnimation(fig, plotter, len(Y_true), fargs=(scat_test, Y_true, scat_hat, Yhat), interval = 20, repeat=False)
 
         plt.show()
+        plt.save('./savefig.png')

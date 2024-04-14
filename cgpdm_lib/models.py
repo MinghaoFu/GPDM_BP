@@ -15,6 +15,9 @@ from torch.distributions.normal import Normal
 import pickle
 import sys
 from termcolor import colored, cprint
+from tqdm import tqdm
+from Caulimate.Utils.Tools import check_tensor
+
 
 
 class GPDM(torch.nn.Module):
@@ -175,6 +178,24 @@ class GPDM(torch.nn.Module):
         # dynamic model input
         self.dyn_back_step = dyn_back_step
 
+        # Set XY-kernel parameters
+        self.xy_log_lengthscales = torch.nn.Parameter(torch.tensor(
+            np.log(np.abs(np.concatenate([y_lengthscales_init, np.ones(self.D)], axis=0))),
+            dtype = self.dtype,
+            device = self.device),
+            requires_grad = flg_train_y_lengthscales)
+        # TODO partially differiated
+        self.xy_log_lambdas = torch.nn.Parameter(torch.tensor(
+            np.log(np.abs(np.concatenate([x_lambdas_init, y_lambdas_init], axis=0))),
+            dtype = self.dtype,
+            device = self.device),
+            requires_grad = flg_train_y_lambdas)
+        self.xy_log_sigma_n = torch.nn.Parameter(torch.tensor(
+            np.log(np.abs(np.concatenate([y_sigma_n_init], axis=0))),
+            dtype = self.dtype,
+            device = self.device),
+            requires_grad = flg_train_y_sigma_n)
+
         # Set Y-kernel parameters
         self.y_log_lengthscales = torch.nn.Parameter(torch.tensor(
             np.log(np.abs(y_lengthscales_init)),
@@ -283,9 +304,12 @@ class GPDM(torch.nn.Module):
 
         print('Num. of sequences = '+str(self.num_sequences)+' [Data points = '+str(np.concatenate(self.observations_list, 0).shape[0])+']')
 
-    def get_give_y_y_kernel(self, X1, X2, Y, flg_noise = True):
-        pass
 
+    def get_xy_kernel(self, X1, Y1, X2, Y2, flg_noise=True):
+        XY1 = torch.cat([X1,Y1],1)
+        XY2 = torch.cat([X2,Y2],1)
+        return self.get_rbf_kernel(XY1, XY2, self.xy_log_lengthscales, self.xy_log_sigma_n, self.sigma_n_num_X+self.sigma_n_num_Y, flg_noise)
+    
     def get_y_kernel(self, X1, X2, flg_noise = True):
         """
         Compute the latent mapping kernel (GP Y)
@@ -312,7 +336,7 @@ class GPDM(torch.nn.Module):
     def get_x_kernel(self, X1, X2, flg_noise = True):
         """
         Compute the latent dynamic kernel (GP X)
-x
+
         Parameters
         ----------
         
@@ -364,12 +388,17 @@ x
         K_rbf(X1,X2)
 
         """
-
         if flg_noise:
             N = X1.shape[0]
+            hp = torch.exp(log_sigma_n_par)**2 * torch.eye(N, dtype = self.dtype, device = self.device)
+            hp.clamp_(min = -1, max=1)
+            rbf_kernel = torch.exp(-self.get_weighted_distances(X1, X2, log_lengthscales_par)) + \
+                hp + sigma_n_num**2 * torch.eye(N, dtype = self.dtype, device = self.device)
+            if torch.isnan(rbf_kernel[0, -1]):
+                print('rbf nan')
             return torch.exp(-self.get_weighted_distances(X1, X2, log_lengthscales_par)) + \
-                torch.exp(log_sigma_n_par)**2 * torch.eye(N, dtype = self.dtype, device = self.device) + \
-                sigma_n_num**2 * torch.eye(N, dtype = self.dtype, device = self.device)
+                hp + \
+                sigma_n_num**2 * torch.eye(N, dtype = self.dtype, device = self.device) 
 
         else:
             return torch.exp(-self.get_weighted_distances(X1, X2, log_lengthscales_par))
@@ -396,13 +425,13 @@ x
 
         """
         lengthscales = torch.exp(log_lengthscales_par)
-
         X1_sliced = X1 / lengthscales
         X1_squared = torch.sum(X1_sliced.mul(X1_sliced), dim = 1, keepdim = True)
         X2_sliced = X2 / lengthscales
         X2_squared = torch.sum(X2_sliced.mul(X2_sliced), dim = 1, keepdim = True)
         dist = X1_squared + X2_squared.transpose(dim0 = 0, dim1 = 1) - \
             2 * torch.matmul(X1_sliced,X2_sliced.transpose(dim0 = 0, dim1 = 1))
+        import pdb; pdb.set_trace()
 
         return dist
 
@@ -432,7 +461,6 @@ x
         X2 = torch.cat([X2,torch.ones(X2.shape[0], 1, dtype = self.dtype, device = self.device)], 1)
         return torch.matmul(X1, torch.matmul(Sigma, X2.transpose(0,1)))
 
-
     def get_y_neg_log_likelihood(self, Y, X, N):
         """
         Compute latent negative log-likelihood Ly
@@ -454,7 +482,8 @@ x
         L_y = D/2*log(|K_y(X,X)|) + 1/2*trace(K_y^-1*Y*W_y^2*Y) - N*log(|W_y|)
 
         """
-        K_y = self.get_y_kernel(X,X)
+        K_y = self.get_xy_kernel(X,Y,X,Y)
+
         U, info = torch.linalg.cholesky_ex(K_y, upper = True)
         U_inv = torch.inverse(U)
         Ky_inv = torch.matmul(U_inv,U_inv.t())
@@ -489,10 +518,24 @@ x
         L_x = d/2*log(|K_x(Xin,Xin)|) + 1/2*trace(K_x^-1*Xout*W_x^2*Xout) - (N-dyn_back_step)*log(|W_x|)
 
         """
-        
         K_x = self.get_x_kernel(Xin, Xin)
         U, info = torch.linalg.cholesky_ex(K_x, upper = True)
         U_inv = torch.inverse(U)
+        # if torch.det(U) == 0:
+        #     print("Matrix is singular, attempting regularization.")
+        #     lambda_val = 0.01  # Small regularization factor
+        #     U_inv = torch.inverse(U + torch.eye(U.size(0)) * lambda_val)
+        # else:
+        #     try:
+                
+        #     except RuntimeError as e:
+        #         import pdb; pdb.set_trace()
+        #         self.get_rbf_kernel(Xin, Xin, self.x_log_lengthscales, self.x_log_sigma_n, self.sigma_n_num_X)
+        #         print(f"Regularization failed: {e}")
+        #     else:
+        #         print("Regularization succeeded. Inverse obtained.")
+
+
         Kx_inv = torch.matmul(U_inv, U_inv.t())
         log_det_K_x = 2 * torch.sum(torch.log(torch.diag(U)))
 
@@ -503,7 +546,6 @@ x
         return self.d / 2 * log_det_K_x + 1 / 2 * \
             torch.trace(torch.linalg.multi_dot([Kx_inv, Xout, W2, Xout.transpose(0,1)])) \
             - Xin.shape[0] * log_det_W
-
 
     def get_Xin_Xout_matrices(self, X = None, target = None, back_step = None):
         """
@@ -616,7 +658,10 @@ x
 
         lossY = self.get_y_neg_log_likelihood(Y, self.X, N)
         lossX = self.get_x_neg_log_likelihood(Xout, Xin, N)
-
+        # print(lossY, 
+        #       balance*lossX,
+        #       0.1*torch.norm(self.x_log_sigma_n, p=1),
+        #       0.1*torch.norm(self.y_log_sigma_n, p=1))
         loss = lossY + balance*lossX
 
         return loss
@@ -634,8 +679,9 @@ x
         self.X = torch.nn.Parameter(torch.tensor(X0, dtype = self.dtype, 
                             device=  self.device), requires_grad=True)
 
+
         # init inverse kernel matrices
-        Ky = self.get_y_kernel(self.X, self.X)
+        Ky = self.get_xy_kernel(self.X, check_tensor(Y), self.X, check_tensor(Y))
         U, info = torch.linalg.cholesky_ex(Ky, upper = True)
         U_inv = torch.inverse(U)
         self.Ky_inv = torch.matmul(U_inv, U_inv.t())
@@ -777,7 +823,7 @@ x
         optimizer = f_optim(self.parameters())
         losses = []
         t_start = time.time()
-        for epoch in range(num_opt_steps):
+        for epoch in tqdm(range(num_opt_steps)):
             def closure():
                 if torch.is_grad_enabled():
                     optimizer.zero_grad()
