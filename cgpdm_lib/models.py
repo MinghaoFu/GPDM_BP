@@ -92,7 +92,7 @@ class GPDM(torch.nn.Module):
                  flg_train_x_lambdas = True, flg_train_x_lengthscales = True,
                  flg_train_x_sigma_n = True, flg_train_x_lin_coeff = True,
                  sigma_n_num_Y = 0., sigma_n_num_X = 0.,
-                 dtype = torch.float64, device = torch.device('cpu')):
+                 dtype = torch.float64, device = torch.device('cpu'), mask=None, X_gt=None):
         """
         Parameters
         ----------
@@ -177,6 +177,9 @@ class GPDM(torch.nn.Module):
         self.dyn_target = dyn_target
         # dynamic model input
         self.dyn_back_step = dyn_back_step
+
+        self.mask = mask
+        self.X_gt = X_gt
 
         # Set XY-kernel parameters
         self.xy_log_lengthscales = torch.nn.Parameter(torch.tensor(
@@ -306,6 +309,7 @@ class GPDM(torch.nn.Module):
 
 
     def get_xy_kernel(self, X1, Y1, X2, Y2, flg_noise=True):
+
         XY1 = torch.cat([X1,Y1],1)
         XY2 = torch.cat([X2,Y2],1)
         return self.get_rbf_kernel(XY1, XY2, self.xy_log_lengthscales, self.xy_log_sigma_n, self.sigma_n_num_X+self.sigma_n_num_Y, flg_noise)
@@ -431,7 +435,7 @@ class GPDM(torch.nn.Module):
         X2_squared = torch.sum(X2_sliced.mul(X2_sliced), dim = 1, keepdim = True)
         dist = X1_squared + X2_squared.transpose(dim0 = 0, dim1 = 1) - \
             2 * torch.matmul(X1_sliced,X2_sliced.transpose(dim0 = 0, dim1 = 1))
-        import pdb; pdb.set_trace()
+
 
         return dist
 
@@ -677,11 +681,12 @@ class GPDM(torch.nn.Module):
 
         # set latent variables as parameters
         self.X = torch.nn.Parameter(torch.tensor(X0, dtype = self.dtype, 
-                            device=  self.device), requires_grad=True)
+                            device=self.device), requires_grad=True)
 
 
         # init inverse kernel matrices
-        Ky = self.get_xy_kernel(self.X, check_tensor(Y), self.X, check_tensor(Y))
+        Ky = self.get_xy_kernel(self.X, check_tensor(Y, device=self.device), self.X, check_tensor(Y, device=self.device))
+        #Ky = self.get_xy_kernel(self.X, Y, self.X, Y)
         U, info = torch.linalg.cholesky_ex(Ky, upper = True)
         U_inv = torch.inverse(U)
         self.Ky_inv = torch.matmul(U_inv, U_inv.t())
@@ -1209,6 +1214,8 @@ class GPDM(torch.nn.Module):
         config_dict['d'] = self.d
         config_dict['sigma_n_num_X'] = self.sigma_n_num_X
         config_dict['sigma_n_num_Y'] = self.sigma_n_num_Y
+        config_dict['mask'] = self.mask
+        config_dict['X_gt'] = self.X_gt
         pickle.dump(config_dict, open(config_dict_path, 'wb'))
         cprint("\nGPDM config dict saved in "+config_dict_path, "green")
         cprint("GPDM state dict saved in "+state_dict_path, "green")

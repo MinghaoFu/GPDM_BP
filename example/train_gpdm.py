@@ -19,8 +19,15 @@ import argparse
 import time
 from cgpdm_lib.models import GPDM
 from Caulimate.Utils.Tools import seed_everything
+from Caulimate.Utils.GraphUtils import eudistance_mask
 from Caulimate.Data.SimSSM import GPCDM
+from Caulimate.Data.CESM2.dataset import CESM2_grouped_dataset
+
+
+XR_DATA_PATH = "/l/users/minghao.fu/dataset/CESM2/CESM2_pacific_grouped_SST.nc"
+NUM_AREA = 1
 seed_everything(1)
+
 
 # file parameters
 p = argparse.ArgumentParser('train gpdm')
@@ -77,9 +84,11 @@ else:
 folder = 'DATA/8x8_rng_swing_'+str(deg)+'_deg/'
 print('\nDATA FOLDER: '+folder)
 
-dataset = GPCDM(6000, 10, 6, 3, "ER", 10, ((-0.15, -0.05),(0.05, 0.15)))
+#dataset = GPCDM(6000, 100, 6, 3, "ER", 10, ((-0.15, -0.05),(0.05, 0.15)))
+dataset = CESM2_grouped_dataset(XR_DATA_PATH, num_area=NUM_AREA)[0]
+
 Y_data = []
-Y_data.append(dataset.Z)
+Y_data.append(dataset.X)
 # for i in range(41):
 #     Y_data.append(np.random.random(size=(102, 192)))
 #     #Y_data.append(np.loadtxt(folder+'state_samples_rng_swing_'+str(i)+'.csv', delimiter=','))
@@ -107,6 +116,8 @@ param_dict['dyn_back_step'] = dyn_back_step
 param_dict['sigma_n_num_Y'] = 10**-3
 param_dict['sigma_n_num_X'] = 10**-3
 param_dict['device'] = device
+param_dict['mask'] = eudistance_mask(dataset.coords, 100)
+param_dict['X_gt'] = dataset.X
 model = GPDM(**param_dict)
 
 # add training data
@@ -116,6 +127,7 @@ training_set = np.random.randint(low=0, high=len(Y_data), size=num_data)
 print('training set: ', training_set)
 for i in training_set:
     model.add_data(Y_data[i])
+# model.add_data(Y_data[0])
 
 # init model
 model.init_X()

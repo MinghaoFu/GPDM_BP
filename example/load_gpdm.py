@@ -18,6 +18,14 @@ import pickle
 import argparse
 import time
 from cgpdm_lib.models import GPDM
+from Caulimate.Data.CESM2.dataset import CESM2_grouped_dataset
+from Caulimate.Utils.Tools import lin_reg_discover, check_tensor, check_array
+from Caulimate.Utils.GraphUtils import eudistance_mask
+from Caulimate.Data.SimSSM import GPCDM
+
+
+XR_DATA_PATH = "/l/users/minghao.fu/dataset/CESM2/CESM2_pacific_grouped_SST.nc"
+NUM_AREA = 1
 
 
 # file parameters
@@ -53,6 +61,8 @@ dyn_target = config_dict['dyn_target']
 dyn_back_step = config_dict['dyn_back_step']
 sigma_n_num_Y = config_dict['sigma_n_num_Y']
 sigma_n_num_X = config_dict['sigma_n_num_X']
+mask = config_dict['mask']
+X_gt = config_dict['X_gt']
 
 
 param_dict = {}
@@ -75,6 +85,8 @@ param_dict['device'] = device
 model = GPDM(**param_dict)
 model.load(config_dict, state_dict)
 
+#dataset = CESM2_grouped_dataset(XR_DATA_PATH, num_area=NUM_AREA)[0]
+dataset = GPCDM(6000, 104, 6, 3, "ER", 10, ((-0.15, -0.05),(0.05, 0.15)))
 # get latent states
 X_list = model.get_latent_sequences()
 
@@ -96,7 +108,12 @@ for i in range(len(model.observations_list)):
     N = Xi.shape[0]
 
     Xhat, Yhat = model.rollout(num_steps=N, X0=Xi[0,:], X1=Xi[1,:], flg_sample_X=False, flg_sample_Y=False, flg_noise=True)
-
+    mask = torch.ones((D+d, D)).to(device)
+    mask[:D, :D] = check_tensor(eudistance_mask(dataset.coords, 100), device=device)
+    import pdb; pdb.set_trace()
+    M = lin_reg_discover(check_tensor(Y_true), torch.cat([check_tensor(Y_true), check_tensor(dataset.Z)], dim=1), mask)
+    np.save('./M_gt.npy', check_array(dataset.B_bin))
+    np.save('./M.npy', check_array(M))
     Yhat = Yhat.reshape(len(Yhat),64,3)
     Y_true = Y_true.reshape(len(Y_true),64,3)
 
